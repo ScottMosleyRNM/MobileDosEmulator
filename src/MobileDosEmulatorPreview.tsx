@@ -1,3 +1,12 @@
+// @ts-ignore
+declare const Dos: any;
+
+// @ts-ignore
+declare global {
+  interface Window {
+    JSZip: any;
+  }
+}
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
