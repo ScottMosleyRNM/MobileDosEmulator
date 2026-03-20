@@ -73,34 +73,77 @@ function readSnapshots(): Snapshot[] {
 function writeSnapshots(value: Snapshot[]) {
   localStorage.setItem(SNAPSHOT_STORAGE_KEY, JSON.stringify(value));
 }
+function makeJsDosAdapter(viewport: HTMLDivElement | null): EmulatorAdapter {
+  let ci: any = null;
 
-function makeMockAdapter(viewport: HTMLDivElement | null): EmulatorAdapter {
   return {
     async mountZip(file, options) {
       if (!viewport) return;
+
       viewport.innerHTML = "";
-      const screen = document.createElement("div");
-      screen.className = "h-full w-full bg-black text-slate-200 flex flex-col items-center justify-center px-4 text-center";
-      screen.innerHTML = `
-        <div style="color:#67e8f9;font-size:12px;letter-spacing:.35em;text-transform:uppercase;margin-bottom:12px;">Mobile DOS Emulator</div>
-        <div style="font-size:18px;font-weight:600;margin-bottom:6px;">${file.name}</div>
-        <div style="font-size:13px;color:#94a3b8;margin-bottom:8px;">Mounted as DOS-safe folder</div>
-        <div style="font-family:monospace;font-size:20px;color:#86efac;">${options.dosSafeFolder}</div>
-        <div style="max-width:280px;font-size:12px;color:#64748b;line-height:1.5;margin-top:18px;">
-          This is a preview shell. The real js-dos runtime gets plugged into the same adapter methods used by the controller and snapshot actions.
-        </div>
-      `;
-      viewport.appendChild(screen);
+
+      const canvas = document.createElement("div");
+      canvas.style.width = "100%";
+      canvas.style.height = "100%";
+      viewport.appendChild(canvas);
+
+      // @ts-ignore
+      ci = await Dos(canvas, {
+        wdosboxUrl: "https://v8.js-dos.com/latest/wdosbox.js",
+      });
+
+      // unzip in browser
+      const zipData = await file.arrayBuffer();
+      const zip = await (window as any).JSZip.loadAsync(zipData);
+
+      for (const [path, entry] of Object.entries(zip.files)) {
+        if ((entry as any).dir) continue;
+        const content = await (entry as any).async("uint8array");
+        ci.fs.writeFile(`/${options.dosSafeFolder}/${path}`, content);
+      }
+
+      // find first runnable file
+      const files = Object.keys(zip.files);
+      const exe =
+        files.find((f) => f.toLowerCase().endsWith(".bat")) ||
+        files.find((f) => f.toLowerCase().endsWith(".exe")) ||
+        files.find((f) => f.toLowerCase().endsWith(".com"));
+
+      if (exe) {
+        ci.main([`${options.dosSafeFolder}/${exe}`]);
+      }
     },
+
     sendKey(key) {
-      console.log("key", key);
+      if (!ci) return;
+
+      const map: Record<string, number> = {
+        ENTER: 13,
+        ESC: 27,
+        SPACE: 32,
+        TAB: 9,
+        ARROWUP: 38,
+        ARROWDOWN: 40,
+        ARROWLEFT: 37,
+        ARROWRIGHT: 39,
+      };
+
+      if (key.startsWith("F")) {
+        const num = Number(key.replace("F", ""));
+        ci.simulateKeyPress(111 + num); // F1–F12
+        return;
+      }
+
+      const code = map[key];
+      if (code) ci.simulateKeyPress(code);
     },
+
     async saveState() {
-      return JSON.stringify({ savedAt: new Date().toISOString() });
+      return "";
     },
-    async loadState(payload) {
-      console.log("load snapshot", payload);
-    },
+
+    async loadState() {},
+
     async shutdown() {
       if (viewport) viewport.innerHTML = "";
     },
