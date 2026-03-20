@@ -188,7 +188,7 @@ export default function MobileDosEmulatorPreview() {
   }, []);
 
   useEffect(() => {
-    adapterRef.current = makeMockAdapter(viewportRef.current);
+    adapterRef.current = makeJsDosAdapter(viewportRef.current);
   }, []);
 
   useEffect(() => {
