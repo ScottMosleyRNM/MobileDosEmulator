@@ -1,13 +1,6 @@
 // @ts-ignore
 declare const Dos: any;
 
-// @ts-ignore
-declare global {
-  interface Window {
-    JSZip: any;
-  }
-}
-
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
@@ -86,16 +79,32 @@ function writeSnapshots(value: Snapshot[]) {
 
 function makeJsDosAdapter(viewport: HTMLDivElement | null): EmulatorAdapter {
   let ci: any = null;
+  let lastBlobUrl: string | null = null;
 
   return {
-    const blobUrl = URL.createObjectURL(file);
+    async mountZip(file, _options) {
+      if (!viewport) return;
 
-await ci.run({
-  url: blobUrl,
-});
+      viewport.innerHTML = "";
 
-    sendKey(key) {
-      if (!ci) return;
+      const host = document.createElement("div");
+      host.style.width = "100%";
+      host.style.height = "100%";
+      viewport.appendChild(host);
+
+      ci = await Dos(host, {
+        wdosboxUrl: "https://v8.js-dos.com/latest/wdosbox.js",
+      });
+
+      lastBlobUrl = URL.createObjectURL(file);
+
+      await ci.run({
+        url: lastBlobUrl,
+      });
+    },
+
+    sendKey(key: string) {
+      if (!ci || typeof ci.simulateKeyPress !== "function") return;
 
       const map: Record<string, number> = {
         ENTER: 13,
@@ -126,10 +135,19 @@ await ci.run({
       return "";
     },
 
-    async loadState(_payload: string) {},
+    async loadState(_payload: string) {
+      return;
+    },
 
     async shutdown() {
-      if (viewport) viewport.innerHTML = "";
+      if (lastBlobUrl) {
+        URL.revokeObjectURL(lastBlobUrl);
+        lastBlobUrl = null;
+      }
+      if (viewport) {
+        viewport.innerHTML = "";
+      }
+      ci = null;
     },
   };
 }
@@ -281,7 +299,7 @@ export default function MobileDosEmulatorPreview() {
               Load Game
             </button>
           </div>
-          <input ref={fileInputRef} type="file" accept=".zip" className="hidden" onChange={handleFileSelected} />
+          <input ref={fileInputRef} type="file" accept=".zip,.jsdos" className="hidden" onChange={handleFileSelected} />
         </header>
 
         <main className="flex min-h-0 flex-1 flex-col">
