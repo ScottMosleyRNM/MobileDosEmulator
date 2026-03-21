@@ -60,9 +60,9 @@ function guessBootPathCandidates(fileName: string, folder: string) {
   return [
     `${folder}\\${stem}.BAT`,
     `${folder}\\${stem}.EXE`,
-    `${folder}\\START.BAT`,
-    `${folder}\\AUTOEXEC.BAT`,
-    `${folder}\\INSTALL.BAT`,
+    `${folder}\\SIERRA.EXE`,
+    `${folder}\\PQ.EXE`,
+    `${folder}\\SCIV.EXE`,
   ];
 }
 
@@ -85,19 +85,38 @@ function scoreLaunchCandidate(path: string) {
   const lower = path.toLowerCase();
   const file = lower.split("/").pop() || lower;
 
-  if (file === "start.bat") return 0;
-  if (file === "run.bat") return 1;
-  if (file === "go.bat") return 2;
-  if (file === "autoexec.bat") return 3;
-  if (file === "sierra.exe") return 4;
-  if (file === "sierra.bat") return 5;
-  if (file === "pq.exe") return 6;
-  if (file === "pq.bat") return 7;
-  if (file === "sciv.exe") return 8;
-  if (file === "sciv.bat") return 9;
-  if (file === "install.exe") return 100;
-  if (file === "setup.exe") return 101;
-  return 20;
+  if (file === "sierra.exe") return 0;
+  if (file === "pq.exe") return 1;
+  if (file === "sciv.exe") return 2;
+  if (file === "sierra.bat") return 3;
+  if (file === "pq.bat") return 4;
+  if (file === "sciv.bat") return 5;
+  if (file === "start.bat") return 10;
+  if (file === "run.bat") return 11;
+  if (file === "go.bat") return 12;
+
+  if (file === "autoexec.bat") return 999;
+  if (file === "install.exe") return 1000;
+  if (file === "setup.exe") return 1001;
+
+  if (file.endsWith(".exe")) return 100;
+  if (file.endsWith(".com")) return 101;
+  if (file.endsWith(".bat")) return 102;
+
+  return 5000;
+}
+
+function stripCommonTopLevelFolder(paths: string[]) {
+  const splitPaths = paths.map((p) => p.split("/").filter(Boolean));
+  if (splitPaths.length === 0) return paths;
+
+  const first = splitPaths[0][0];
+  if (!first) return paths;
+
+  const allShareTop = splitPaths.every((parts) => parts.length > 1 && parts[0] === first);
+  if (!allShareTop) return paths;
+
+  return splitPaths.map((parts) => parts.slice(1).join("/"));
 }
 
 async function detectLaunchPath(file: File): Promise<string> {
@@ -113,7 +132,9 @@ async function detectLaunchPath(file: File): Promise<string> {
     (name) => !(zip.files[name] as any).dir
   );
 
-  const runnable = entries
+  const normalizedEntries = stripCommonTopLevelFolder(entries);
+
+  const runnable = normalizedEntries
     .filter((name) => /\.(bat|exe|com)$/i.test(name))
     .sort((a, b) => scoreLaunchCandidate(a) - scoreLaunchCandidate(b));
 
