@@ -1,18 +1,12 @@
 // @ts-ignore
 declare const Dos: any;
 
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 
-type FileEntry = {
-  original: string;
-  normalized: string;
-};
-
-type EmulatorAdapter = {
-  mountZip: (
-    file: File,
-    options: { dosSafeFolder: string; launchPath: string }
-  ) => Promise<void>;
+type Candidate = {
+  fullPath: string;
+  dir: string;
+  file: string;
 };
 
 function normalizeDosToken(input: string) {
@@ -23,65 +17,62 @@ function normalizeDosToken(input: string) {
     .slice(0, 8) || "GAME";
 }
 
-function stripTopLevel(entries: string[]) {
+function toDosSegment(seg: string) {
+  const [nameRaw, extRaw] = seg.split(".");
+  const name = nameRaw.replace(/[^A-Z0-9]/gi, "").toUpperCase();
+  const ext = extRaw?.toUpperCase().slice(0, 3);
+
+  if (name.length > 8) {
+    return `${name.slice(0, 6)}~1${ext ? "." + ext : ""}`;
+  }
+  return ext ? `${name}.${ext}` : name;
+}
+
+function toDosPath(path: string) {
+  return path.split("/").map(toDosSegment).join("\\");
+}
+
+function splitPath(path: string) {
+  const parts = path.split("/").filter(Boolean);
+  return {
+    dir: parts.slice(0, -1).join("/"),
+    file: parts[parts.length - 1],
+  };
+}
+
+function stripTopFolder(entries: string[]) {
   const split = entries.map((e) => e.split("/").filter(Boolean));
-  const first = split[0]?.[0];
+  const root = split[0]?.[0];
 
-  if (!first) return entries;
+  if (!root) return entries;
 
-  const shared = split.every((s) => s.length > 1 && s[0] === first);
+  const shared = split.every((s) => s.length > 1 && s[0] === root);
   if (!shared) return entries;
 
   return split.map((s) => s.slice(1).join("/"));
 }
 
-function score(path: string) {
-  const file = path.toLowerCase().split("/").pop() || "";
-
-  if (file.endsWith(".exe")) return 0;
-  if (file.endsWith(".com")) return 1;
-  if (file.endsWith(".bat")) return 2;
-
-  return 10;
-}
-
-async function analyzeZip(file: File): Promise<FileEntry[]> {
+async function analyzeZip(file: File): Promise<Candidate[]> {
   const JSZip = (window as any).JSZip;
   const zip = await JSZip.loadAsync(await file.arrayBuffer());
 
-  const entries = Object.keys(zip.files).filter(
+  let entries = Object.keys(zip.files).filter(
     (k) => !zip.files[k].dir
   );
 
-  const normalized = stripTopLevel(entries);
+  entries = stripTopFolder(entries);
 
-  return normalized
-    .filter((p) => /\.(exe|com|bat)$/i.test(p))
-    .map((p) => ({
-      original: p,
-      normalized: p,
-    }))
-    .sort((a, b) => score(a.normalized) - score(b.normalized));
+  return entries
+    .filter((e) => /\.(exe|com|bat)$/i.test(e))
+    .map((e) => {
+      const { dir, file } = splitPath(e);
+      return { fullPath: e, dir, file };
+    });
 }
 
-function toDosPath(path: string) {
-  return path
-    .split("/")
-    .map((seg) => {
-      const name = seg.split(".")[0].replace(/[^A-Z0-9]/gi, "").toUpperCase();
-      const ext = seg.split(".")[1]?.toUpperCase().slice(0, 3);
-
-      if (name.length > 8) {
-        return `${name.slice(0, 6)}~1${ext ? "." + ext : ""}`;
-      }
-      return ext ? `${name}.${ext}` : name;
-    })
-    .join("\\");
-}
-
-function makeAdapter(viewport: HTMLDivElement | null): EmulatorAdapter {
+function makeAdapter(viewport: HTMLDivElement | null) {
   return {
-    async mountZip(file, options) {
+    async mount(file: File, folder: string, candidate: Candidate) {
       viewport!.innerHTML = "";
 
       const canvas = document.createElement("canvas");
@@ -90,34 +81,39 @@ function makeAdapter(viewport: HTMLDivElement | null): EmulatorAdapter {
       canvas.style.width = "100%";
       viewport!.appendChild(canvas);
 
-      const blobUrl = URL.createObjectURL(file);
+      const blob = URL.createObjectURL(file);
 
       const dos = Dos(canvas, {
         wdosboxUrl: "https://js-dos.com/6.22/current/wdosbox.js",
       });
 
       dos.ready((fs: any, main: any) => {
-        fs.extract(blobUrl, options.dosSafeFolder);
+        fs.extract(blob, folder);
 
-        main([
+        const commands = [
           "-c",
-          `cd ${options.dosSafeFolder}`,
-          "-c",
-          toDosPath(options.launchPath),
-        ]);
+          `cd ${folder}`,
+        ];
+
+        if (candidate.dir) {
+          commands.push("-c", `cd ${toDosPath(candidate.dir)}`);
+        }
+
+        commands.push("-c", toDosSegment(candidate.file));
+
+        main(commands);
       });
     },
   };
 }
 
 export default function App() {
-  const [files, setFiles] = useState<FileEntry[]>([]);
-  const [selected, setSelected] = useState<string | null>(null);
-  const [status, setStatus] = useState("Load a ZIP file");
   const [file, setFile] = useState<File | null>(null);
+  const [candidates, setCandidates] = useState<Candidate[]>([]);
+  const [status, setStatus] = useState("Load a DOS ZIP");
 
   const viewportRef = useRef<HTMLDivElement | null>(null);
-  const adapterRef = useRef<EmulatorAdapter | null>(null);
+  const adapterRef = useRef<any>(null);
 
   useEffect(() => {
     adapterRef.current = makeAdapter(viewportRef.current);
@@ -130,60 +126,83 @@ export default function App() {
     setFile(f);
     setStatus("Analyzing ZIP...");
 
-    const entries = await analyzeZip(f);
-    setFiles(entries);
+    const list = await analyzeZip(f);
+    setCandidates(list);
 
-    if (entries.length === 1) {
-      launch(entries[0].normalized, f);
+    if (list.length === 1) {
+      launch(list[0], f);
     } else {
-      setStatus("Select a file to launch");
+      setStatus("Choose a file to launch");
     }
   }
 
-  async function launch(path: string, f?: File) {
+  async function launch(candidate: Candidate, f?: File) {
     const game = f || file;
     if (!game) return;
 
     const folder = normalizeDosToken(game.name);
 
-    setSelected(path);
-    setStatus(`Launching ${path}`);
+    setStatus(`Launching ${candidate.file}`);
 
-    await adapterRef.current?.mountZip(game, {
-      dosSafeFolder: folder,
-      launchPath: path,
-    });
+    await adapterRef.current.mount(game, folder, candidate);
   }
 
   return (
-    <div style={{ padding: 16, color: "white", background: "#020617", height: "100vh" }}>
-      <input type="file" accept=".zip" onChange={handleFile} />
+    <div style={{ height: "100vh", background: "#020617", color: "white", display: "flex", flexDirection: "column" }}>
+      
+      {/* HEADER */}
+      <div style={{ padding: 12 }}>
+        <input type="file" accept=".zip" onChange={handleFile} />
+        <div>{status}</div>
+      </div>
 
-      <div style={{ marginTop: 10 }}>{status}</div>
+      {/* VIEWPORT */}
+      <div
+        ref={viewportRef}
+        style={{
+          width: "100%",
+          aspectRatio: "4/3",
+          background: "black",
+        }}
+      />
 
-      {!selected && files.length > 1 && (
-        <div style={{ marginTop: 10 }}>
-          {files.map((f) => (
+      {/* LAUNCH PICKER */}
+      {candidates.length > 1 && (
+        <div style={{ padding: 12, overflowY: "auto" }}>
+          {candidates.map((c) => (
             <button
-              key={f.original}
-              onClick={() => launch(f.normalized)}
+              key={c.fullPath}
+              onClick={() => launch(c)}
               style={{
                 display: "block",
+                width: "100%",
                 marginBottom: 6,
-                padding: 8,
+                padding: 10,
                 background: "#1e293b",
+                borderRadius: 8,
               }}
             >
-              {f.normalized}
+              {c.fullPath}
             </button>
           ))}
         </div>
       )}
 
-      <div
-        ref={viewportRef}
-        style={{ marginTop: 16, width: "100%", aspectRatio: "4/3", background: "black" }}
-      />
+      {/* CONTROLS */}
+      <div style={{
+        marginTop: "auto",
+        padding: 12,
+        display: "grid",
+        gridTemplateColumns: "repeat(3, 1fr)",
+        gap: 8
+      }}>
+        <button>↑</button>
+        <button>Enter</button>
+        <button>Esc</button>
+        <button>←</button>
+        <button>↓</button>
+        <button>→</button>
+      </div>
     </div>
   );
 }
