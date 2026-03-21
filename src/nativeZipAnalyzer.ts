@@ -2,14 +2,15 @@
 declare const emulators: any;
 
 export type LaunchCandidate = {
+  zipPath: string;
   relativePath: string;
+  displayPath: string;
   relativeDir: string;
   fileName: string;
-  displayPath: string;
   dosAliasDir: string;
   dosAliasFile: string;
   score: number;
-  reason: string[];
+  reason: string;
 };
 
 export type LaunchAnalysis = {
@@ -20,17 +21,14 @@ export type LaunchAnalysis = {
 function toDosShortSegment(segment: string) {
   const upper = segment.toUpperCase();
   const parts = upper.split(".");
-  const rawName = parts[0] || "";
-  const rawExt = parts[1] || "";
-
-  const name = rawName.replace(/[^A-Z0-9]/g, "");
-  const ext = rawExt.replace(/[^A-Z0-9]/g, "").slice(0, 3);
+  const name = (parts[0] || "").replace(/[^A-Z0-9]/g, "");
+  const ext = (parts[1] || "").replace(/[^A-Z0-9]/g, "").slice(0, 3);
 
   const needsAlias =
     name.length > 8 ||
-    /[^A-Z0-9]/.test(rawName) ||
-    rawName.includes("_") ||
-    rawName.includes(" ");
+    /[^A-Z0-9]/.test(parts[0] || "") ||
+    segment.includes("_") ||
+    segment.includes(" ");
 
   let shortName = name.slice(0, 8);
   if (needsAlias && name.length > 0) {
@@ -40,7 +38,7 @@ function toDosShortSegment(segment: string) {
   return ext ? `${shortName}.${ext}` : shortName;
 }
 
-export function toDosAliasPath(path: string) {
+function toDosAliasPath(path: string) {
   return path
     .replace(/\\/g, "/")
     .split("/")
@@ -49,7 +47,7 @@ export function toDosAliasPath(path: string) {
     .join("\\");
 }
 
-function scoreCandidate(path: string) {
+function scoreCandidate(path: string): { score: number; reason: string } {
   const normalized = path.replace(/\\/g, "/");
   const parts = normalized.split("/").filter(Boolean);
   const fileName = (parts[parts.length - 1] || "").toLowerCase();
@@ -57,143 +55,66 @@ function scoreCandidate(path: string) {
   const depth = Math.max(0, parts.length - 1);
 
   let score = 0;
-  const reason: string[] = [];
+  const reasons: string[] = [];
 
-  score += depth * 10;
-  reason.push(depth === 0 ? "root-level" : `nested depth ${depth}`);
+  score += depth * 8;
+  reasons.push(depth === 0 ? "root-level" : `nested depth ${depth}`);
 
   if (ext === "exe") {
     score += 0;
-    reason.push("exe");
+    reasons.push("exe");
   } else if (ext === "com") {
     score += 6;
-    reason.push("com");
+    reasons.push("com");
   } else if (ext === "bat") {
-    score += 18;
-    reason.push("bat");
+    score += 20;
+    reasons.push("bat");
   }
 
-  if (/^(play|run|go|launch)\.(exe|com|bat)$/i.test(fileName)) {
-    score -= 15;
-    reason.push("common launcher");
-  }
-
-  if (/^start\.bat$/i.test(fileName)) {
-    score -= 10;
-    reason.push("start bat");
+  if (/^(play|run|start|go)\.(exe|com|bat)$/i.test(fileName)) {
+    score -= 8;
+    reasons.push("launcher-like");
   }
 
   if (/^(game|main)\.(exe|com|bat)$/i.test(fileName)) {
-    score -= 14;
-    reason.push("generic game binary");
+    score -= 10;
+    reasons.push("game-like");
   }
 
-  if (/^(install|setup|config|configure|uninst)\.(exe|com|bat)$/i.test(fileName)) {
-    score += 250;
-    reason.push("installer/config");
+  if (/^(sierra|pq|sciv)\.(exe|com|bat)$/i.test(fileName)) {
+    score -= 12;
+    reasons.push("title-like");
+  }
+
+  if (/^(install|setup|uninst|config|configure)\.(exe|com|bat)$/i.test(fileName)) {
+    score += 260;
+    reasons.push("installer/config");
   }
 
   if (/^autoexec\.bat$/i.test(fileName)) {
-    score += 300;
-    reason.push("autoexec deprioritized");
+    score += 320;
+    reasons.push("autoexec deprioritized");
   }
 
-  if (/^(monitor|makepath|mouse|sound|sndsetup|keyboard|keyb|debug|patch|resource)\.(exe|com|bat)$/i.test(fileName)) {
-    score += 180;
-    reason.push("utility/support executable");
+  if (/^(makepath|monitor|debug|test|patch|sound|mouse|keyb|keyboard|readme|manual|help|file_id|resource)\.(exe|com|bat)$/i.test(fileName)) {
+    score += 220;
+    reasons.push("likely utility/support");
   }
 
-  if (/readme|manual|docs?|help|monitor|makepath|resource|setup|install|config/i.test(fileName)) {
-    score += 100;
-    reason.push("support-ish name");
+  if (/readme|manual|docs?|help|patch|mouse|sound|keyboard|monitor|makepath|resource/i.test(fileName)) {
+    score += 120;
+    reasons.push("support-ish name");
   }
 
-  return { score, reason };
+  return {
+    score,
+    reason: reasons.join(", "),
+  };
 }
 
-function chooseAutoLaunch(candidates: LaunchCandidate[]) {
+function chooseAutoLaunchCandidate(candidates: LaunchCandidate[]): LaunchCandidate | null {
   if (candidates.length === 0) return null;
   if (candidates.length === 1) return candidates[0];
 
   const [first, second] = candidates;
-  const strongTop = first.score < 80;
-  const strongGap = second.score - first.score >= 25;
-
-  return strongTop && strongGap ? first : null;
-}
-
-function walkFs(FS: any, rootPath: string, basePath = rootPath): string[] {
-  const out: string[] = [];
-  const entries = FS.readdir(rootPath).filter((name: string) => name !== "." && name !== "..");
-
-  for (const name of entries) {
-    const full = `${rootPath}/${name}`.replace(/\/+/g, "/");
-    const stat = FS.stat(full);
-
-    if (FS.isDir(stat.mode)) {
-      out.push(...walkFs(FS, full, basePath));
-      continue;
-    }
-
-    if (/\.(exe|com|bat)$/i.test(name)) {
-      const relative = full.slice(basePath.length).replace(/^\/+/, "");
-      out.push(relative);
-    }
-  }
-
-  return out;
-}
-
-export async function analyzeZipNatively(file: File): Promise<LaunchAnalysis> {
-  if (!emulators?.bundle) {
-    throw new Error("emulators.bundle() is not available.");
-  }
-
-  const zipBytes = new Uint8Array(await file.arrayBuffer());
-  const bundle = await emulators.bundle();
-
-  const mountPath = `/scan-${Date.now()}`;
-
-  try {
-    await bundle.zipToFs(zipBytes, mountPath);
-
-    const FS = bundle.module.FS;
-    const scanRoot = `/home/web_user${mountPath}`;
-    const files = walkFs(FS, scanRoot, scanRoot);
-
-    if (files.length === 0) {
-      throw new Error("No runnable EXE, COM, or BAT files found in ZIP.");
-    }
-
-    const candidates = files
-      .map((relativePath) => {
-        const normalized = relativePath.replace(/\\/g, "/");
-        const parts = normalized.split("/").filter(Boolean);
-        const fileName = parts[parts.length - 1] || normalized;
-        const relativeDir = parts.slice(0, -1).join("/");
-
-        const { score, reason } = scoreCandidate(normalized);
-
-        return {
-          relativePath: normalized,
-          relativeDir,
-          fileName,
-          displayPath: normalized.replace(/\//g, "\\"),
-          dosAliasDir: relativeDir ? toDosAliasPath(relativeDir) : "",
-          dosAliasFile: toDosShortSegment(fileName),
-          score,
-          reason,
-        };
-      })
-      .sort((a, b) => a.score - b.score || a.displayPath.localeCompare(b.displayPath));
-
-    return {
-      candidates,
-      autoLaunch: chooseAutoLaunch(candidates),
-    };
-  } finally {
-    try {
-      bundle.destroy?.();
-    } catch {}
-  }
-}
+  const confidentGap = second.score - first.score >= 
