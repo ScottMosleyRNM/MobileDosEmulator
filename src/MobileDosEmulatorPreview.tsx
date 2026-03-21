@@ -102,16 +102,67 @@ function makeJsDosAdapter(viewport: HTMLDivElement | null): EmulatorAdapter {
       });
 
       // unzip in browser
-      const zipData = await file.arrayBuffer();
+
+const zipData = await file.arrayBuffer();
 const zip = await (window as any).JSZip.loadAsync(zipData);
 
+const ensureDir = (fullPath: string) => {
+  const parts = fullPath.split("/").filter(Boolean);
+  let current = "";
+  for (const part of parts) {
+    current += `/${part}`;
+    try {
+      ci.fs.mkdir(current);
+    } catch {
+      // directory may already exist
+    }
+  }
+};
+
 for (const [path, entry] of Object.entries(zip.files)) {
-  if ((entry as any).dir) continue;
-  const content = await (entry as any).async("uint8array");
-  ci.fs.writeFile(`/${options.dosSafeFolder}/${path}`, content);
+  const zipEntry = entry as any;
+  const normalizedPath = path.replace(/^\/+/, "");
+
+  if (zipEntry.dir) {
+    ensureDir(`/${options.dosSafeFolder}/${normalizedPath}`);
+    continue;
+  }
+
+  const dirName = normalizedPath.includes("/")
+    ? normalizedPath.substring(0, normalizedPath.lastIndexOf("/"))
+    : "";
+
+  if (dirName) {
+    ensureDir(`/${options.dosSafeFolder}/${dirName}`);
+  }
+
+  const content = await zipEntry.async("uint8array");
+  ci.fs.writeFile(`/${options.dosSafeFolder}/${normalizedPath}`, content);
 }
 
-// find first runnable file
+const files = Object.keys(zip.files).filter((f) => !(zip.files[f] as any).dir);
+
+const candidates = files
+  .filter((f) => /\.(bat|exe|com)$/i.test(f))
+  .sort((a, b) => {
+    const score = (name: string) => {
+      const lower = name.toLowerCase();
+      if (lower.endsWith("start.bat")) return 0;
+      if (lower.endsWith("run.bat")) return 1;
+      if (lower.endsWith("go.bat")) return 2;
+      if (lower.endsWith("install.exe")) return 100;
+      if (lower.endsWith("setup.exe")) return 101;
+      return 10;
+    };
+    return score(a) - score(b);
+  });
+
+const exe = candidates[0];
+if (!exe) {
+  throw new Error("No runnable BAT/EXE/COM file found in ZIP");
+}
+
+ci.main([`${options.dosSafeFolder}/${exe}`]);// find first runnable file
 const files = Object.keys(zip.files);
 const exe =
   files.find((f) => f.toLowerCase().endsWith(".bat")) ||
