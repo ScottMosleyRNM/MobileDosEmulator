@@ -103,14 +103,24 @@ function makeJsDosAdapter(viewport: HTMLDivElement | null): EmulatorAdapter {
 
       // unzip in browser
       const zipData = await file.arrayBuffer();
-      const zip = await (window as any).JSZip.loadAsync(zipData);
+const zip = await (window as any).JSZip.loadAsync(zipData);
 
-      for (const [path, entry] of Object.entries(zip.files)) {
-        if ((entry as any).dir) continue;
-        const content = await (entry as any).async("uint8array");
-        ci.fs.writeFile(`/${options.dosSafeFolder}/${path}`, content);
-      }
+for (const [path, entry] of Object.entries(zip.files)) {
+  if ((entry as any).dir) continue;
+  const content = await (entry as any).async("uint8array");
+  ci.fs.writeFile(`/${options.dosSafeFolder}/${path}`, content);
+}
 
+// find first runnable file
+const files = Object.keys(zip.files);
+const exe =
+  files.find((f) => f.toLowerCase().endsWith(".bat")) ||
+  files.find((f) => f.toLowerCase().endsWith(".exe")) ||
+  files.find((f) => f.toLowerCase().endsWith(".com"));
+
+if (exe) {
+  ci.main([`${options.dosSafeFolder}/${exe}`]);
+}
       // find first runnable file
       const files = Object.keys(zip.files);
       const exe =
