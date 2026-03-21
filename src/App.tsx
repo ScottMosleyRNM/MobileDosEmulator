@@ -167,13 +167,15 @@ function makeJsDosZipAdapter(viewport: HTMLDivElement | null): EmulatorAdapter {
 
       viewport.innerHTML = "";
 
-      const host = document.createElement("div");
-      host.style.width = "100%";
-      host.style.height = "100%";
-      host.style.background = "black";
-      host.tabIndex = 0;
-      viewport.appendChild(host);
-      hostEl = host;
+      const host = document.createElement("canvas");
+host.style.width = "100%";
+host.style.height = "100%";
+host.style.display = "block";
+host.width = 640;
+host.height = 480;
+host.tabIndex = 0;
+viewport.appendChild(host);
+hostEl = host as unknown as HTMLDivElement;
 
       zipBlobUrl = URL.createObjectURL(file);
 
