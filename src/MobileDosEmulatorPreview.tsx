@@ -88,20 +88,6 @@ function makeJsDosAdapter(viewport: HTMLDivElement | null): EmulatorAdapter {
   let ci: any = null;
 
   return {
-    async mountZip(file, options) {
-      if (!viewport) return;
-
-      viewport.innerHTML = "";
-
-      const host = document.createElement("div");
-      host.style.width = "100%";
-      host.style.height = "100%";
-      viewport.appendChild(host);
-
-      ci = await Dos(host, {
-        wdosboxUrl: "https://v8.js-dos.com/latest/wdosbox.js",
-      });
-
     const blobUrl = URL.createObjectURL(file);
 
 await ci.run({
