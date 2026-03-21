@@ -102,97 +102,11 @@ function makeJsDosAdapter(viewport: HTMLDivElement | null): EmulatorAdapter {
         wdosboxUrl: "https://v8.js-dos.com/latest/wdosbox.js",
       });
 
-      const zipData = await file.arrayBuffer();
-      const zip = await window.JSZip.loadAsync(zipData);
+    const blobUrl = URL.createObjectURL(file);
 
-      const allPaths = Object.keys(zip.files);
-      const fileEntries = allPaths.filter((p) => !(zip.files[p] as any).dir);
-
-      const pathPartsList = fileEntries.map((p) => p.split("/").filter(Boolean));
-      const firstParts = pathPartsList.map((parts) => parts[0]).filter(Boolean);
-      const uniqueFirstParts = Array.from(new Set(firstParts));
-
-      const stripTopLevel =
-        uniqueFirstParts.length === 1 &&
-        pathPartsList.every((parts) => parts.length > 1 && parts[0] === uniqueFirstParts[0]);
-
-      const rewritePath = (originalPath: string) => {
-        const cleaned = originalPath.replace(/^\/+/, "");
-        if (!stripTopLevel) return cleaned;
-        const parts = cleaned.split("/").filter(Boolean);
-        return parts.slice(1).join("/");
-      };
-
-      const ensureDir = (fullPath: string) => {
-        const parts = fullPath.split("/").filter(Boolean);
-        let current = "";
-        for (const part of parts) {
-          current += `/${part}`;
-          try {
-            ci.fs.mkdir(current);
-          } catch {
-            // ignore existing directories
-          }
-        }
-      };
-
-      ensureDir(`/${options.dosSafeFolder}`);
-
-      for (const [path, entry] of Object.entries(zip.files)) {
-        const zipEntry = entry as any;
-        let normalizedPath = rewritePath(path);
-
-        if (!normalizedPath) continue;
-
-        if (zipEntry.dir) {
-          ensureDir(`/${options.dosSafeFolder}/${normalizedPath}`);
-          continue;
-        }
-
-        const dirName = normalizedPath.includes("/")
-          ? normalizedPath.substring(0, normalizedPath.lastIndexOf("/"))
-          : "";
-
-        if (dirName) {
-          ensureDir(`/${options.dosSafeFolder}/${dirName}`);
-        }
-
-        const content = await zipEntry.async("uint8array");
-        ci.fs.writeFile(`/${options.dosSafeFolder}/${normalizedPath}`, content);
-      }
-
-      const files = Object.keys(zip.files)
-        .filter((f) => !(zip.files[f] as any).dir)
-        .map((f) => rewritePath(f))
-        .filter(Boolean);
-
-      const candidates = files
-        .filter((f) => /\.(bat|exe|com)$/i.test(f))
-        .sort((a, b) => {
-          const score = (name: string) => {
-            const lower = name.toLowerCase();
-            const base = lower.split("/").pop() || lower;
-
-            if (base === "start.bat") return 0;
-            if (base === "run.bat") return 1;
-            if (base === "go.bat") return 2;
-            if (base === "pq.bat") return 3;
-            if (base === "sierra.bat") return 4;
-            if (base === "install.exe") return 100;
-            if (base === "setup.exe") return 101;
-            return 10;
-          };
-
-          return score(a) - score(b);
-        });
-
-      const exe = candidates[0];
-      if (!exe) {
-        throw new Error("No runnable BAT/EXE/COM file found in ZIP");
-      }
-
-      ci.main([`${options.dosSafeFolder}/${exe}`]);
-    },
+await ci.run({
+  url: blobUrl,
+});
 
     sendKey(key) {
       if (!ci) return;
