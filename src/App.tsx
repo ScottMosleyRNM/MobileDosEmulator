@@ -109,7 +109,9 @@ async function detectLaunchPath(file: File): Promise<string> {
   const zipData = await file.arrayBuffer();
   const zip = await JSZip.loadAsync(zipData);
 
-  const entries = Object.keys(zip.files).filter((name) => !(zip.files[name] as any).dir);
+  const entries = Object.keys(zip.files).filter(
+    (name) => !(zip.files[name] as any).dir
+  );
 
   const runnable = entries
     .filter((name) => /\.(bat|exe|com)$/i.test(name))
@@ -137,9 +139,35 @@ function mapUiKeyToDomKey(key: string) {
   return map[key] || key;
 }
 
+function toDosShortSegment(segment: string) {
+  const upper = segment.toUpperCase();
+  const parts = upper.split(".");
+  const name = parts[0].replace(/[^A-Z0-9]/g, "");
+  const ext = (parts[1] || "").replace(/[^A-Z0-9]/g, "").slice(0, 3);
+
+  const needsAlias =
+    name.length > 8 || /[^A-Z0-9]/.test(parts[0]) || segment.includes("_") || segment.includes(" ");
+
+  let shortName = name.slice(0, 8);
+  if (needsAlias && name.length > 0) {
+    shortName = `${name.slice(0, 6)}~1`;
+  }
+
+  return ext ? `${shortName}.${ext}` : shortName;
+}
+
+function toDosAliasPath(path: string) {
+  return path
+    .replace(/\\/g, "/")
+    .split("/")
+    .filter(Boolean)
+    .map((segment) => toDosShortSegment(segment))
+    .join("\\");
+}
+
 function makeJsDosZipAdapter(viewport: HTMLDivElement | null): EmulatorAdapter {
   let dosInstance: any = null;
-  let hostEl: HTMLDivElement | null = null;
+  let hostEl: HTMLCanvasElement | null = null;
   let zipBlobUrl: string | null = null;
 
   const dispatchKey = (rawKey: string) => {
@@ -168,18 +196,18 @@ function makeJsDosZipAdapter(viewport: HTMLDivElement | null): EmulatorAdapter {
       viewport.innerHTML = "";
 
       const host = document.createElement("canvas");
-host.style.width = "100%";
-host.style.height = "100%";
-host.style.display = "block";
-host.width = 640;
-host.height = 480;
-host.tabIndex = 0;
-viewport.appendChild(host);
-hostEl = host as unknown as HTMLDivElement;
+      host.style.width = "100%";
+      host.style.height = "100%";
+      host.style.display = "block";
+      host.width = 640;
+      host.height = 480;
+      host.tabIndex = 0;
+      viewport.appendChild(host);
+      hostEl = host;
 
       zipBlobUrl = URL.createObjectURL(file);
 
-      const launchPath = options.launchPath.replace(/\//g, "\\");
+      const launchPath = toDosAliasPath(options.launchPath);
       const workingDir = options.dosSafeFolder;
 
       await new Promise<void>((resolve, reject) => {
@@ -316,30 +344,35 @@ export default function App() {
     const file = event.target.files?.[0];
     if (!file) return;
 
-    const dosSafeFolder = getDosSafeFolderName(file.name);
-    const detectedLaunchPath = await detectLaunchPath(file);
-
-    const nextLoadedGame: LoadedGame = {
-      file,
-      displayName: file.name,
-      dosSafeFolder,
-      bootPathCandidates: guessBootPathCandidates(file.name, dosSafeFolder),
-      selectedBootPath: `${dosSafeFolder}\\${detectedLaunchPath.replace(/\//g, "\\")}`,
-    };
-
-    setLoadedGame(nextLoadedGame);
-    setStatus(`Loading ${file.name} as ${dosSafeFolder}...`);
-
     try {
+      const dosSafeFolder = getDosSafeFolderName(file.name);
+      const detectedLaunchPath = await detectLaunchPath(file);
+
+      const nextLoadedGame: LoadedGame = {
+        file,
+        displayName: file.name,
+        dosSafeFolder,
+        bootPathCandidates: guessBootPathCandidates(file.name, dosSafeFolder),
+        selectedBootPath: `${dosSafeFolder}\\${toDosAliasPath(detectedLaunchPath)}`,
+      };
+
+      setLoadedGame(nextLoadedGame);
+      setStatus(`Loading ${file.name} as ${dosSafeFolder}...`);
+
       await adapterRef.current?.shutdown?.();
       await adapterRef.current?.mountZip(file, {
         dosSafeFolder,
         launchPath: detectedLaunchPath,
       });
-      setStatus(`Loaded ${file.name}. ZIP name was normalized to the DOS-safe folder ${dosSafeFolder}.`);
+
+      setStatus(
+        `Loaded ${file.name}. ZIP name was normalized to the DOS-safe folder ${dosSafeFolder}.`
+      );
     } catch (error) {
       console.error(error);
-      setStatus(error instanceof Error ? error.message : "The ZIP could not be mounted.");
+      setStatus(
+        error instanceof Error ? error.message : "The ZIP could not be mounted."
+      );
     }
   }
 
@@ -406,7 +439,13 @@ export default function App() {
               Load Game
             </button>
           </div>
-          <input ref={fileInputRef} type="file" accept=".zip" className="hidden" onChange={handleFileSelected} />
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept=".zip"
+            className="hidden"
+            onChange={handleFileSelected}
+          />
         </header>
 
         <main className="flex min-h-0 flex-1 flex-col">
@@ -439,7 +478,10 @@ export default function App() {
                 </div>
                 <div className="mt-3 space-y-2">
                   {loadedGame.bootPathCandidates.map((candidate) => (
-                    <div key={candidate} className="rounded-2xl bg-slate-950 px-3 py-2 font-mono text-xs text-slate-300">
+                    <div
+                      key={candidate}
+                      className="rounded-2xl bg-slate-950 px-3 py-2 font-mono text-xs text-slate-300"
+                    >
                       {candidate}
                     </div>
                   ))}
@@ -472,10 +514,15 @@ export default function App() {
 
               <div className="mt-3 space-y-2">
                 {snapshots.map((snapshot) => (
-                  <div key={snapshot.id} className="flex items-center justify-between gap-3 rounded-2xl bg-slate-950 px-3 py-3">
+                  <div
+                    key={snapshot.id}
+                    className="flex items-center justify-between gap-3 rounded-2xl bg-slate-950 px-3 py-3"
+                  >
                     <div className="min-w-0">
                       <div className="truncate text-sm text-slate-200">{snapshot.label}</div>
-                      <div className="text-xs text-slate-500">{new Date(snapshot.createdAt).toLocaleString()}</div>
+                      <div className="text-xs text-slate-500">
+                        {new Date(snapshot.createdAt).toLocaleString()}
+                      </div>
                     </div>
                     <button
                       onClick={() => loadSnapshot(snapshot)}
@@ -524,7 +571,12 @@ export default function App() {
                       Type
                     </button>
                     {F_KEYS.map((key) => (
-                      <KeyButton key={key} label={key} onPress={() => sendKey(key)} className="min-w-[74px]" />
+                      <KeyButton
+                        key={key}
+                        label={key}
+                        onPress={() => sendKey(key)}
+                        className="min-w-[74px]"
+                      />
                     ))}
                   </div>
                 </div>
@@ -547,30 +599,63 @@ export default function App() {
                       Type
                     </button>
                     {F_KEYS.map((key) => (
-                      <KeyButton key={key} label={key} onPress={() => sendKey(key)} className="min-w-[74px]" />
+                      <KeyButton
+                        key={key}
+                        label={key}
+                        onPress={() => sendKey(key)}
+                        className="min-w-[74px]"
+                      />
                     ))}
                   </div>
                 </div>
 
                 <div className="grid grid-cols-[116px_1fr] gap-3">
                   <div className="grid gap-3">
-                    <KeyButton label="ENTER" onPress={() => sendKey("ENTER")} className="text-emerald-300" />
-                    <KeyButton label="ESC" onPress={() => sendKey("ESC")} className="text-rose-300" />
+                    <KeyButton
+                      label="ENTER"
+                      onPress={() => sendKey("ENTER")}
+                      className="text-emerald-300"
+                    />
+                    <KeyButton
+                      label="ESC"
+                      onPress={() => sendKey("ESC")}
+                      className="text-rose-300"
+                    />
                     <KeyButton label="SPACE" onPress={() => sendKey("SPACE")} />
-                    <KeyButton label="TAB" onPress={() => sendKey("TAB")} className="text-amber-300" />
+                    <KeyButton
+                      label="TAB"
+                      onPress={() => sendKey("TAB")}
+                      className="text-amber-300"
+                    />
                   </div>
 
                   <div className="grid grid-cols-3 grid-rows-3 gap-3">
                     <div />
-                    <KeyButton label="Up" onPress={() => sendKey("ARROWUP")} icon={<ArrowUp size={18} />} />
+                    <KeyButton
+                      label="Up"
+                      onPress={() => sendKey("ARROWUP")}
+                      icon={<ArrowUp size={18} />}
+                    />
                     <div />
-                    <KeyButton label="Left" onPress={() => sendKey("ARROWLEFT")} icon={<ArrowLeft size={18} />} />
+                    <KeyButton
+                      label="Left"
+                      onPress={() => sendKey("ARROWLEFT")}
+                      icon={<ArrowLeft size={18} />}
+                    />
                     <div className="flex items-center justify-center rounded-2xl border border-dashed border-slate-800 bg-slate-900/40 text-xs text-slate-500">
                       <Gamepad2 size={16} />
                     </div>
-                    <KeyButton label="Right" onPress={() => sendKey("ARROWRIGHT")} icon={<ArrowRight size={18} />} />
+                    <KeyButton
+                      label="Right"
+                      onPress={() => sendKey("ARROWRIGHT")}
+                      icon={<ArrowRight size={18} />}
+                    />
                     <div />
-                    <KeyButton label="Down" onPress={() => sendKey("ARROWDOWN")} icon={<ArrowDown size={18} />} />
+                    <KeyButton
+                      label="Down"
+                      onPress={() => sendKey("ARROWDOWN")}
+                      icon={<ArrowDown size={18} />}
+                    />
                     <div />
                   </div>
                 </div>
