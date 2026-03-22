@@ -59,17 +59,30 @@ function stripCommonTopLevelFolder(paths: string[]) {
   return splitPaths.map((parts) => parts.slice(1).join("/"));
 }
 
+function normalizeDosToken(input: string) {
+  const withoutExt = input.replace(/\.[^.]+$/, "");
+  const cleaned = withoutExt.toUpperCase().replace(/[^A-Z0-9]/g, "");
+  return (cleaned || "GAME").slice(0, 8);
+}
+
+export function getDosSafeFolderName(fileName: string) {
+  return normalizeDosToken(fileName);
+}
+
 function toDosShortSegment(segment: string) {
   const upper = segment.toUpperCase();
-  const parts = upper.split(".");
-  const name = (parts[0] || "").replace(/[^A-Z0-9]/g, "");
-  const ext = (parts[1] || "").replace(/[^A-Z0-9]/g, "").slice(0, 3);
+  const lastDot = upper.lastIndexOf(".");
+  const rawName = lastDot >= 0 ? upper.slice(0, lastDot) : upper;
+  const rawExt = lastDot >= 0 ? upper.slice(lastDot + 1) : "";
+
+  const name = rawName.replace(/[^A-Z0-9]/g, "");
+  const ext = rawExt.replace(/[^A-Z0-9]/g, "").slice(0, 3);
 
   const needsAlias =
     name.length > 8 ||
-    /[^A-Z0-9]/.test(parts[0] || "") ||
-    segment.includes("_") ||
-    segment.includes(" ");
+    /[^A-Z0-9]/.test(rawName) ||
+    rawName.includes("_") ||
+    rawName.includes(" ");
 
   let shortName = name.slice(0, 8);
   if (needsAlias && name.length > 0) {
@@ -88,6 +101,70 @@ function toDosAliasPath(path: string) {
     .join("\\");
 }
 
+function decodeCp437(bytes: Uint8Array) {
+  let result = "";
+  for (const value of bytes) result += CP437_TABLE[value] ?? "?";
+  return result;
+}
+
+function decodeZipString(bytes: Uint8Array, flags: number) {
+  if ((flags & 0x800) !== 0) {
+    return new TextDecoder("utf-8", { fatal: false }).decode(bytes);
+  }
+  return decodeCp437(bytes);
+}
+
+function findEndOfCentralDirectory(view: DataView) {
+  const lowerBound = Math.max(0, view.byteLength - MAX_EOCD_SEARCH);
+
+  for (let offset = view.byteLength - 22; offset >= lowerBound; offset -= 1) {
+    if (view.getUint32(offset, true) !== EOCD_SIGNATURE) continue;
+
+    return {
+      entryCount: view.getUint16(offset + 10, true),
+      centralDirectorySize: view.getUint32(offset + 12, true),
+      centralDirectoryOffset: view.getUint32(offset + 16, true),
+    };
+  }
+
+  throw new Error("Could not find ZIP central directory.");
+}
+
+function parseZipEntries(buffer: ArrayBuffer): ParsedZipEntry[] {
+  const view = new DataView(buffer);
+  const bytes = new Uint8Array(buffer);
+  const eocd = findEndOfCentralDirectory(view);
+
+  const entries: ParsedZipEntry[] = [];
+  let cursor = eocd.centralDirectoryOffset;
+  const end = eocd.centralDirectoryOffset + eocd.centralDirectorySize;
+
+  while (cursor < end && entries.length < eocd.entryCount) {
+    if (view.getUint32(cursor, true) !== CDFH_SIGNATURE) {
+      throw new Error("ZIP central directory entry signature mismatch.");
+    }
+
+    const flags = view.getUint16(cursor + 8, true);
+    const fileNameLength = view.getUint16(cursor + 28, true);
+    const extraLength = view.getUint16(cursor + 30, true);
+    const commentLength = view.getUint16(cursor + 32, true);
+
+    const fileNameStart = cursor + 46;
+    const fileNameEnd = fileNameStart + fileNameLength;
+
+    const path = decodeZipString(bytes.slice(fileNameStart, fileNameEnd), flags).replace(/\\/g, "/");
+
+    entries.push({
+      path,
+      isDirectory: path.endsWith("/"),
+    });
+
+    cursor = fileNameEnd + extraLength + commentLength;
+  }
+
+  return entries;
+}
+
 function scoreCandidate(path: string): { score: number; reason: string } {
   const normalized = path.replace(/\\/g, "/");
   const parts = normalized.split("/").filter(Boolean);
@@ -104,119 +181,79 @@ function scoreCandidate(path: string): { score: number; reason: string } {
   if (ext === "exe") {
     reasons.push("exe");
   } else if (ext === "com") {
-    score += 6;
+    score += 8;
     reasons.push("com");
   } else if (ext === "bat") {
-    score += 20;
+    score += 22;
     reasons.push("bat");
   }
 
-  if (/^(play|run|start|go)\.(exe|com|bat)$/i.test(fileName)) {
-    score -= 8;
+  if (/^(play|run|start|go|launch)\.(exe|com|bat)$/i.test(fileName)) {
+    score -= 16;
     reasons.push("launcher-like");
   }
 
   if (/^(game|main)\.(exe|com|bat)$/i.test(fileName)) {
-    score -= 10;
+    score -= 14;
     reasons.push("game-like");
   }
 
-  if (/^(sierra|pq|sciv)\.(exe|com|bat)$/i.test(fileName)) {
-    score -= 12;
+  if (/^(sierra|sciv|scivw|pq|kq|sq|lsl|keen|doom|wolf3d|duke3d)\.(exe|com|bat)$/i.test(fileName)) {
+    score -= 24;
     reasons.push("title-like");
   }
 
-  if (/^(install|setup|uninst|config|configure)\.(exe|com|bat)$/i.test(fileName)) {
-    score += 260;
+  if (/^(install|setup|uninst|config|configure|install3|setup3)\.(exe|com|bat)$/i.test(fileName)) {
+    score += 280;
     reasons.push("installer/config");
   }
 
   if (/^autoexec\.bat$/i.test(fileName)) {
-    score += 320;
+    score += 340;
     reasons.push("autoexec deprioritized");
   }
 
-  if (/^(makepath|monitor|debug|test|patch|sound|mouse|keyb|keyboard|readme|manual|help|file_id|resource)\.(exe|com|bat)$/i.test(fileName)) {
-    score += 220;
+  if (/^(makepath|monitor|debug|test|patch|sound|sndsetup|mouse|keyb|keyboard|readme|manual|help|file_id|resource)\.(exe|com|bat)$/i.test(fileName)) {
+    score += 240;
     reasons.push("likely utility/support");
   }
 
-  if (/readme|manual|docs?|help|patch|mouse|sound|keyboard|monitor|makepath|resource/i.test(fileName)) {
-    score += 120;
+  if (/readme|manual|docs?|help|patch|mouse|sound|sndsetup|keyboard|monitor|makepath|resource/i.test(fileName)) {
+    score += 140;
     reasons.push("support-ish name");
   }
 
-  return { score, reason: reasons.join(", ") };
+  return {
+    score,
+    reason: reasons.join(", "),
+  };
 }
 
 function chooseAutoLaunchCandidate(candidates: LaunchCandidate[]): LaunchCandidate | null {
   if (candidates.length === 0) return null;
   if (candidates.length === 1) return candidates[0];
 
+  const nonSetup = candidates.filter(
+    (c) =>
+      !/installer\/config|autoexec deprioritized|likely utility\/support|support-ish name/i.test(c.reason)
+  );
+
+  if (nonSetup.length === 1) {
+    return nonSetup[0];
+  }
+
   const [first, second] = candidates;
-  const confidentGap = second.score - first.score >= 25;
-  const safeTop = first.score < 120;
+  if (!second) return first;
+
+  const confidentGap = second.score - first.score >= 35;
+  const safeTop = first.score < 100;
+
   return safeTop && confidentGap ? first : null;
-}
-
-function decodeCp437(bytes: Uint8Array) {
-  let result = "";
-  for (const value of bytes) result += CP437_TABLE[value] ?? "?";
-  return result;
-}
-
-function decodeZipString(bytes: Uint8Array, flags: number) {
-  if ((flags & 0x800) !== 0) {
-    return new TextDecoder("utf-8", { fatal: false }).decode(bytes);
-  }
-  return decodeCp437(bytes);
-}
-
-function findEndOfCentralDirectory(view: DataView) {
-  const lowerBound = Math.max(0, view.byteLength - MAX_EOCD_SEARCH);
-  for (let offset = view.byteLength - 22; offset >= lowerBound; offset -= 1) {
-    if (view.getUint32(offset, true) !== EOCD_SIGNATURE) continue;
-    return {
-      entryCount: view.getUint16(offset + 10, true),
-      centralDirectorySize: view.getUint32(offset + 12, true),
-      centralDirectoryOffset: view.getUint32(offset + 16, true),
-    };
-  }
-  throw new Error("Could not find ZIP central directory.");
-}
-
-function parseZipEntries(buffer: ArrayBuffer): ParsedZipEntry[] {
-  const view = new DataView(buffer);
-  const bytes = new Uint8Array(buffer);
-  const eocd = findEndOfCentralDirectory(view);
-  const entries: ParsedZipEntry[] = [];
-
-  let cursor = eocd.centralDirectoryOffset;
-  const end = eocd.centralDirectoryOffset + eocd.centralDirectorySize;
-
-  while (cursor < end && entries.length < eocd.entryCount) {
-    if (view.getUint32(cursor, true) !== CDFH_SIGNATURE) {
-      throw new Error("ZIP central directory entry signature mismatch.");
-    }
-
-    const flags = view.getUint16(cursor + 8, true);
-    const fileNameLength = view.getUint16(cursor + 28, true);
-    const extraLength = view.getUint16(cursor + 30, true);
-    const commentLength = view.getUint16(cursor + 32, true);
-    const fileNameStart = cursor + 46;
-    const fileNameEnd = fileNameStart + fileNameLength;
-
-    const path = decodeZipString(bytes.slice(fileNameStart, fileNameEnd), flags).replace(/\\/g, "/");
-    entries.push({ path, isDirectory: path.endsWith("/") });
-
-    cursor = fileNameEnd + extraLength + commentLength;
-  }
-
-  return entries;
 }
 
 export async function analyzeZipNatively(file: File): Promise<LaunchAnalysis> {
   const buffer = await file.arrayBuffer();
+
   const entryPaths = parseZipEntries(buffer)
     .filter((entry) => !entry.isDirectory)
     .map((entry) => entry.path)
@@ -227,6 +264,7 @@ export async function analyzeZipNatively(file: File): Promise<LaunchAnalysis> {
   }
 
   const normalizedEntries = stripCommonTopLevelFolder(entryPaths);
+
   const candidates = normalizedEntries
     .map((relativePath) => {
       const { score, reason } = scoreCandidate(relativePath);
