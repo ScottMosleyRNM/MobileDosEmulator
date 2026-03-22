@@ -462,7 +462,9 @@ export default function App() {
 
     try {
       const dosSafeFolder = getDosSafeFolderName(file.name);
-      const launchCandidates = await detectLaunchCandidates(file);
+    import { analyzeZipNatively } from "./nativeZipAnalyzer";
+
+const { candidates: launchCandidates, autoLaunch } = await analyzeZipNatively(file);
 
       if (launchCandidates.length === 0) {
         throw new Error("No runnable EXE, COM, or BAT files found in ZIP.");
@@ -478,7 +480,7 @@ export default function App() {
 
       setLoadedGame(nextLoadedGame);
 
-      const autoCandidate = chooseAutoLaunchCandidate(launchCandidates);
+   const autoCandidate = autoLaunch;
 
       if (!autoCandidate) {
         setLaunchPickerOpen(true);
