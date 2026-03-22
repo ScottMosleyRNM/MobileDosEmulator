@@ -1,3 +1,4 @@
+import { analyzeZipNatively, type LaunchCandidate } from "./nativeZipAnalyzer";
 // @ts-ignore
 declare const Dos: any;
 
