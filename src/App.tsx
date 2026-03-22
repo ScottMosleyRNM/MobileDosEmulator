@@ -1,5 +1,4 @@
 // @ts-ignore
-// eslint-disable-next-line no-var
 declare const Dos: any;
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
@@ -16,7 +15,11 @@ import {
   Save,
   Upload,
 } from "lucide-react";
-import { analyzeZipNatively, type LaunchCandidate } from "./nativeZipAnalyzer";
+import {
+  analyzeZipNatively,
+  getDosSafeFolderName,
+  type LaunchCandidate,
+} from "./nativeZipAnalyzer";
 
 type Snapshot = {
   id: string;
@@ -50,16 +53,6 @@ type EmulatorAdapter = {
 
 const SNAPSHOT_STORAGE_KEY = "mobile-dos-emulator.snapshots.v1";
 const F_KEYS = ["F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10", "F11", "F12"];
-
-function normalizeDosToken(input: string) {
-  const withoutExt = input.replace(/\.[^.]+$/, "");
-  const cleaned = withoutExt.toUpperCase().replace(/[^A-Z0-9]/g, "");
-  return (cleaned || "GAME").slice(0, 8);
-}
-
-function getDosSafeFolderName(fileName: string) {
-  return normalizeDosToken(fileName);
-}
 
 function readSnapshots(): Snapshot[] {
   try {
@@ -153,10 +146,21 @@ function makeJsDosZipAdapter(viewport: HTMLDivElement | null): EmulatorAdapter {
             try {
               fs.extract(zipBlobUrl, workingDir);
 
-              const commands: string[] = ["-c", `cd ${workingDir}`];
+              const commands: string[] = [
+                "-c",
+                "mount c .",
+                "-c",
+                "c:",
+                "-c",
+                `cd ${workingDir}`,
+              ];
+
               if (launchDir) {
-                commands.push("-c", `cd ${launchDir}`);
+                for (const segment of launchDir.split("\\").filter(Boolean)) {
+                  commands.push("-c", `cd ${segment}`);
+                }
               }
+
               commands.push("-c", launchFile);
 
               main(commands);
@@ -266,9 +270,13 @@ export default function App() {
   }, [snapshots]);
 
   async function launchCandidate(game: LoadedGame, candidate: LaunchCandidate) {
+    const bootPath = `${game.dosSafeFolder}\\${
+      candidate.dosAliasDir ? `${candidate.dosAliasDir}\\` : ""
+    }${candidate.dosAliasFile}`;
+
     setLoadedGame({
       ...game,
-      selectedBootPath: `${game.dosSafeFolder}\\${candidate.dosAliasDir ? `${candidate.dosAliasDir}\\` : ""}${candidate.dosAliasFile}`,
+      selectedBootPath: bootPath,
     });
     setStatus(`Launching ${candidate.displayPath}...`);
     setLaunchPickerOpen(false);
@@ -281,7 +289,7 @@ export default function App() {
     });
 
     setStatus(
-      `Loaded ${game.displayName}. ZIP name was normalized to the DOS-safe folder ${game.dosSafeFolder}.`
+      `Loaded ${game.displayName}. Launch path: ${bootPath}`
     );
   }
 
@@ -314,6 +322,10 @@ export default function App() {
     } catch (error) {
       console.error(error);
       setStatus(error instanceof Error ? error.message : "The ZIP could not be mounted.");
+    } finally {
+      if (event.target) {
+        event.target.value = "";
+      }
     }
   }
 
@@ -412,7 +424,7 @@ export default function App() {
                   Launch details
                 </div>
                 <div className="text-xs text-slate-400">
-                  Native central-directory ZIP parser for launch detection, js-dos for runtime mounting.
+                  Auto-detect first, then manual picker if the ZIP is ambiguous.
                 </div>
                 <div className="mt-3 rounded-2xl bg-slate-950 p-3 font-mono text-sm text-emerald-300">
                   {loadedGame.dosSafeFolder}
